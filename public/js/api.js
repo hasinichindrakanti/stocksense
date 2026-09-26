@@ -4,7 +4,7 @@ const API = {
 
   async request(endpoint, options = {}) {
     try {
-      const token = localStorage.getItem('stocksense_token');
+      const token = typeof State !== 'undefined' && State.getToken ? State.getToken() : (localStorage.getItem('stocksense_token') || sessionStorage.getItem('stocksense_token'));
       const headers = {
         'Content-Type': 'application/json',
         ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
@@ -15,6 +15,18 @@ const API = {
         ...options,
         headers
       });
+
+      if (res.status === 401) {
+        const data = await res.json().catch(() => ({}));
+        if (!endpoint.startsWith('/api/auth/login') && !endpoint.startsWith('/api/auth/register')) {
+          if (typeof State !== 'undefined') {
+            State.setUser(null, null);
+            State.setRoute('login');
+            if (typeof App !== 'undefined') App.render();
+          }
+        }
+        throw new Error(data.error || 'Authentication required');
+      }
 
       const contentType = res.headers.get('content-type');
       if (contentType && contentType.includes('application/json')) {
@@ -33,7 +45,9 @@ const API = {
       return res;
     } catch (err) {
       console.error(`API Error [${endpoint}]:`, err);
-      Toast.error(err.message);
+      if (!endpoint.startsWith('/api/auth/me')) {
+        Toast.error(err.message);
+      }
       throw err;
     }
   },
@@ -41,6 +55,7 @@ const API = {
   // Auth
   login: (creds) => API.request('/api/auth/login', { method: 'POST', body: JSON.stringify(creds) }),
   register: (data) => API.request('/api/auth/register', { method: 'POST', body: JSON.stringify(data) }),
+  logout: () => API.request('/api/auth/logout', { method: 'POST' }),
   forgotPassword: (email) => API.request('/api/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }),
   resetPassword: (payload) => API.request('/api/auth/reset-password', { method: 'POST', body: JSON.stringify(payload) }),
   getProfile: () => API.request('/api/auth/me'),

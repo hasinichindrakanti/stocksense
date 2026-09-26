@@ -205,6 +205,13 @@ function initSchema() {
       otp TEXT NOT NULL,
       expires_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      token TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      expires_at INTEGER NOT NULL
+    );
   `);
 }
 
@@ -555,6 +562,7 @@ function seedDatabase() {
 // Reset entire database to clean demo state
 function resetDatabase() {
   db.exec(`
+    DROP TABLE IF EXISTS sessions;
     DROP TABLE IF EXISTS otp_codes;
     DROP TABLE IF EXISTS stock_ledger;
     DROP TABLE IF EXISTS inventory_adjustments;
@@ -811,6 +819,41 @@ function executeGuidedDemoStep(stepNumber) {
   });
 }
 
+function createSession(userId, rememberMe = true) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const duration = rememberMe ? (30 * 24 * 60 * 60 * 1000) : (24 * 60 * 60 * 1000); // 30 days vs 24 hours
+  const expiresAt = Date.now() + duration;
+
+  db.prepare(`
+    INSERT INTO sessions (token, user_id, expires_at)
+    VALUES (?, ?, ?)
+  `).run(token, userId, expiresAt);
+
+  return { token, expiresAt };
+}
+
+function getUserFromSession(token) {
+  if (!token) return null;
+  // Clean expired sessions opportunistically
+  db.prepare(`DELETE FROM sessions WHERE expires_at < ?`).run(Date.now());
+
+  const row = db.prepare(`
+    SELECT s.user_id, s.expires_at, u.id, u.name, u.email, u.role, u.department, u.avatar, u.created_at
+    FROM sessions s
+    JOIN users u ON s.user_id = u.id
+    WHERE s.token = ? AND s.expires_at > ?
+  `).get(token, Date.now());
+
+  if (!row) return null;
+  const { user_id, expires_at, ...user } = row;
+  return user;
+}
+
+function deleteSession(token) {
+  if (!token) return;
+  db.prepare(`DELETE FROM sessions WHERE token = ?`).run(token);
+}
+
 // Initialise DB immediately
 initSchema();
 seedDatabase();
@@ -824,5 +867,9 @@ module.exports = {
   setOrUpdateLocationStock,
   logLedger,
   resetDatabase,
-  executeGuidedDemoStep
+  executeGuidedDemoStep,
+  createSession,
+  getUserFromSession,
+  deleteSession
 };
+

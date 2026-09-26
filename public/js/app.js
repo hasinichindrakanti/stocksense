@@ -7,10 +7,30 @@ const App = {
     Toast.init();
     Modals.init();
 
+    // Check existing stored session
+    State.initSession();
+
+    // If there is a stored token, verify it with the server
+    if (State.currentUser && State.getToken()) {
+      try {
+        const me = await API.getProfile();
+        if (me && me.user) {
+          State.currentUser = me.user;
+        } else {
+          State.setUser(null, null);
+        }
+      } catch (e) {
+        console.warn('Session expired or invalid, requiring sign in');
+        State.setUser(null, null);
+      }
+    }
+
     // Subscribe to state changes
     State.subscribe((event, data) => {
       if (event === 'routeChanged') {
         App.renderPage();
+      } else if (event === 'userChanged') {
+        App.render();
       } else if (event === 'sidebarToggled') {
         const sidebar = document.querySelector('.sidebar');
         if (sidebar) {
@@ -19,9 +39,29 @@ const App = {
       }
     });
 
-    // Hash change routing
+    // Hash change routing with strict authentication guard
     window.addEventListener('hashchange', () => {
-      const route = window.location.hash.replace('#', '') || 'dashboard';
+      let route = window.location.hash.replace('#', '') || 'login';
+
+      // Unauthenticated guard
+      if (!State.currentUser) {
+        if (!['login', 'signup', 'forgot', 'reset'].includes(route)) {
+          window.location.hash = '#login';
+          return;
+        }
+        State.currentRoute = route;
+        AuthPage.viewMode = route;
+        const container = document.getElementById('app-container');
+        if (container) AuthPage.render(container);
+        return;
+      }
+
+      // If authenticated and user navigates to an auth page, redirect to dashboard
+      if (['login', 'signup', 'forgot', 'reset'].includes(route)) {
+        window.location.hash = '#dashboard';
+        return;
+      }
+
       if (route !== State.currentRoute) {
         State.currentRoute = route;
         App.renderPage();
@@ -31,14 +71,29 @@ const App = {
     // Global keyboard shortcuts (Ctrl+K / Cmd+K)
     document.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        Modals.openGlobalSearch();
+        if (State.currentUser) {
+          e.preventDefault();
+          Modals.openGlobalSearch();
+        }
       }
     });
 
-    // Handle initial route
-    const initialRoute = window.location.hash.replace('#', '') || 'dashboard';
-    State.currentRoute = initialRoute;
+    // Handle initial route: strictly force unauthenticated visitors to #login
+    let initialRoute = window.location.hash.replace('#', '');
+    if (!State.currentUser) {
+      if (!['login', 'signup', 'forgot', 'reset'].includes(initialRoute)) {
+        initialRoute = 'login';
+        window.location.hash = '#login';
+      }
+      State.currentRoute = initialRoute;
+      AuthPage.viewMode = initialRoute;
+    } else {
+      if (!initialRoute || ['login', 'signup', 'forgot', 'reset'].includes(initialRoute)) {
+        initialRoute = 'dashboard';
+        window.location.hash = '#dashboard';
+      }
+      State.currentRoute = initialRoute;
+    }
 
     // Render Shell
     this.render();
@@ -48,7 +103,7 @@ const App = {
     const container = document.getElementById('app-container');
     if (!container) return;
 
-    // If user is not logged in, show Auth
+    // Strict Unauthenticated Guard: Show Auth Screen
     if (!State.currentUser) {
       AuthPage.render(container);
       return;
@@ -68,13 +123,18 @@ const App = {
   },
 
   async renderPage() {
+    // If not authenticated, ensure AuthPage is rendered
+    if (!State.currentUser) {
+      this.render();
+      return;
+    }
+
     const container = document.getElementById('main-workspace');
     if (!container) return;
 
     // Update active state in sidebar
     const items = document.querySelectorAll('.nav-item');
     items.forEach(el => {
-      const title = el.getAttribute('title');
       const onclickAttr = el.getAttribute('onclick') || '';
       if (onclickAttr.includes(`'${State.currentRoute}'`)) {
         el.classList.add('active');

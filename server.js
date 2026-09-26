@@ -11,8 +11,25 @@ const {
   setOrUpdateLocationStock,
   logLedger,
   resetDatabase,
-  executeGuidedDemoStep
+  executeGuidedDemoStep,
+  createSession,
+  getUserFromSession,
+  deleteSession
 } = require('./db.js');
+
+function getAuthToken(req) {
+  const authHeader = req.headers['authorization'] || '';
+  if (authHeader.startsWith('Bearer ')) {
+    return authHeader.slice(7).trim();
+  }
+  return null;
+}
+
+function authenticateRequest(req) {
+  const token = getAuthToken(req);
+  if (!token) return null;
+  return getUserFromSession(token);
+}
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -92,17 +109,17 @@ const server = http.createServer(async (req, res) => {
     try {
       // 1. AUTH: LOGIN
       if (pathname === '/api/auth/login' && method === 'POST') {
-        const { email, password } = await parseBody(req);
+        const { email, password, rememberMe } = await parseBody(req);
         if (!email || !password) {
           return sendJson(res, 400, { error: 'Email and password are required' });
         }
         const user = db.prepare(`SELECT * FROM users WHERE email = ?`).get(email.trim().toLowerCase());
         if (!user || user.password_hash !== hashPassword(password)) {
-          return sendJson(res, 401, { error: 'Invalid email or password' });
+          return sendJson(res, 401, { error: 'Invalid email or password. Please try again.' });
         }
         const { password_hash, ...safeUser } = user;
-        const token = `token_${user.id}_${Date.now()}`;
-        return sendJson(res, 200, { user: safeUser, token });
+        const session = createSession(user.id, rememberMe !== false);
+        return sendJson(res, 200, { user: safeUser, token: session.token, expiresAt: session.expiresAt });
       }
 
       // 2. AUTH: REGISTER
@@ -111,9 +128,12 @@ const server = http.createServer(async (req, res) => {
         if (!name || !email || !password) {
           return sendJson(res, 400, { error: 'Name, email, and password are required' });
         }
+        if (password.length < 6) {
+          return sendJson(res, 400, { error: 'Password must be at least 6 characters long' });
+        }
         const existing = db.prepare(`SELECT id FROM users WHERE email = ?`).get(email.trim().toLowerCase());
         if (existing) {
-          return sendJson(res, 400, { error: 'User with this email already exists' });
+          return sendJson(res, 400, { error: 'An account with this email already exists' });
         }
         const userRole = role === 'warehouse_staff' ? 'warehouse_staff' : 'inventory_manager';
         const initials = name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) || 'US';
@@ -123,8 +143,8 @@ const server = http.createServer(async (req, res) => {
         `).run(name.trim(), email.trim().toLowerCase(), hashPassword(password), userRole, department || 'Operations', initials);
 
         const newUser = db.prepare(`SELECT id, name, email, role, department, avatar, created_at FROM users WHERE id = ?`).get(result.lastInsertRowid);
-        const token = `token_${newUser.id}_${Date.now()}`;
-        return sendJson(res, 201, { user: newUser, token });
+        const session = createSession(newUser.id, true);
+        return sendJson(res, 201, { user: newUser, token: session.token, expiresAt: session.expiresAt });
       }
 
       // 3. AUTH: FORGOT PASSWORD (Demo OTP Generator)
@@ -164,10 +184,22 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { success: true, message: 'Password has been reset successfully. Please log in.' });
       }
 
+      // Check authentication for all protected endpoints below
+      const authenticatedUser = authenticateRequest(req);
+      if (!authenticatedUser) {
+        return sendJson(res, 401, { error: 'Authentication required. Please sign in to access StockSense.' });
+      }
+
       // 5. AUTH: GET CURRENT PROFILE
       if (pathname === '/api/auth/me' && method === 'GET') {
-        const user = db.prepare(`SELECT id, name, email, role, department, avatar, created_at FROM users WHERE role = 'inventory_manager' LIMIT 1`).get();
-        return sendJson(res, 200, { user });
+        return sendJson(res, 200, { user: authenticatedUser });
+      }
+
+      // 5b. AUTH: LOGOUT
+      if (pathname === '/api/auth/logout' && method === 'POST') {
+        const token = getAuthToken(req);
+        if (token) deleteSession(token);
+        return sendJson(res, 200, { success: true, message: 'Successfully logged out' });
       }
 
       // 6. DASHBOARD: DYNAMIC STATS & CHARTS

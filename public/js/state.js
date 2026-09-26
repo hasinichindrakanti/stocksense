@@ -1,16 +1,30 @@
 // Global Application State Management
 const State = {
-  currentUser: JSON.parse(localStorage.getItem('stocksense_user')) || {
-    id: 1,
-    name: 'Elena Vance',
-    email: 'elena@stocksense.io',
-    role: 'inventory_manager',
-    department: 'Supply Chain & Operations',
-    avatar: 'EV'
-  },
-  currentRoute: 'dashboard',
+  currentUser: null,
+  currentRoute: 'login',
   sidebarCollapsed: localStorage.getItem('stocksense_sidebar_collapsed') === 'true',
   listeners: [],
+
+  initSession() {
+    const userStr = localStorage.getItem('stocksense_user') || sessionStorage.getItem('stocksense_user');
+    const token = localStorage.getItem('stocksense_token') || sessionStorage.getItem('stocksense_token');
+    if (userStr && token) {
+      try {
+        this.currentUser = JSON.parse(userStr);
+      } catch (e) {
+        this.currentUser = null;
+        localStorage.removeItem('stocksense_user');
+        sessionStorage.removeItem('stocksense_user');
+      }
+    } else {
+      this.currentUser = null;
+    }
+    return this.currentUser;
+  },
+
+  getToken() {
+    return localStorage.getItem('stocksense_token') || sessionStorage.getItem('stocksense_token') || null;
+  },
 
   subscribe(listener) {
     this.listeners.push(listener);
@@ -23,22 +37,34 @@ const State = {
     this.listeners.forEach(fn => fn(event, data));
   },
 
-  setUser(user, token) {
+  setUser(user, token, rememberMe = true) {
     this.currentUser = user;
-    if (user) {
-      localStorage.setItem('stocksense_user', JSON.stringify(user));
+    if (user && token) {
+      if (rememberMe) {
+        localStorage.setItem('stocksense_user', JSON.stringify(user));
+        localStorage.setItem('stocksense_token', token);
+        sessionStorage.removeItem('stocksense_user');
+        sessionStorage.removeItem('stocksense_token');
+      } else {
+        sessionStorage.setItem('stocksense_user', JSON.stringify(user));
+        sessionStorage.setItem('stocksense_token', token);
+        localStorage.removeItem('stocksense_user');
+        localStorage.removeItem('stocksense_token');
+      }
     } else {
       localStorage.removeItem('stocksense_user');
-    }
-    if (token) {
-      localStorage.setItem('stocksense_token', token);
-    } else if (!user) {
       localStorage.removeItem('stocksense_token');
+      sessionStorage.removeItem('stocksense_user');
+      sessionStorage.removeItem('stocksense_token');
     }
     this.notify('userChanged', user);
   },
 
   setRoute(route) {
+    // If not authenticated, only allow login or signup
+    if (!this.currentUser && route !== 'login' && route !== 'signup' && route !== 'forgot' && route !== 'reset') {
+      route = 'login';
+    }
     this.currentRoute = route;
     window.location.hash = `#${route}`;
     this.notify('routeChanged', route);
@@ -54,30 +80,17 @@ const State = {
     return this.currentUser && this.currentUser.role === 'inventory_manager';
   },
 
-  // Instant switch for hackathon judges
-  switchRole(role) {
-    if (role === 'inventory_manager') {
-      this.setUser({
-        id: 1,
-        name: 'Elena Vance',
-        email: 'elena@stocksense.io',
-        role: 'inventory_manager',
-        department: 'Supply Chain & Operations',
-        avatar: 'EV'
-      }, 'demo_token_mgr');
-      Toast.success('Switched to Inventory Manager (Elena Vance)');
-    } else {
-      this.setUser({
-        id: 2,
-        name: 'Marcus Chen',
-        email: 'marcus@stocksense.io',
-        role: 'warehouse_staff',
-        department: 'Floor Operations & Logistics',
-        avatar: 'MC'
-      }, 'demo_token_staff');
-      Toast.success('Switched to Warehouse Staff (Marcus Chen)');
+  // Instant persona switch using real server-side authentication
+  async switchRole(role) {
+    try {
+      const email = role === 'inventory_manager' ? 'elena@stocksense.io' : 'marcus@stocksense.io';
+      const res = await API.login({ email, password: 'password123', rememberMe: true });
+      this.setUser(res.user, res.token, true);
+      Toast.success(`Switched to ${res.user.name} (${res.user.role})`);
+      App.render();
+    } catch (e) {
+      Toast.error('Role switch failed: ' + e.message);
     }
-    App.render();
   }
 };
 
